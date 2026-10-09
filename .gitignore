@@ -1,0 +1,27 @@
+# Rust build artifacts
+/target/
+src/target/
+Cargo.lock
+**/*.rs.bk
+*.pdb
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Build outputs
+*.exe
+*.msi
+*.nsi
+*.log
+
+# Runtime files
+settings.ini
+
+# Temporary files
+*.tmp
+*.temp
