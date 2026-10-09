@@ -1,0 +1,24 @@
+[package]
+name = "TwitchChatOverlay"
+version = "1.0.0"
+edition = "2021"
+authors = ["Streamer"]
+description = "A Twitch chat overlay for streaming with always-on-top functionality and badge support"
+license = "MIT"
+
+[package.metadata.wix]
+upgrade-guid = "B08E2A07-FF9E-4A42-B559-1FE6E1F03E44"
+license-path = "wix/License.rtf"
+eula = false
+
+[dependencies]
+bytemuck = "1.25.2"
+cosmic-text = "0.19.0"
+softbuffer = "0.4.8"
+tiny-skia = "0.12.0"
+winit = "0.30.13"
+tungstenite = {version = "0.30.0", features = ["rustls-tls-native-roots"]}
+rustls = { version = "0.23", features = ["ring"]}
+raw-window-handle = "0.6"
+windows = { version = "0.56", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+
