@@ -2,6 +2,7 @@ use std::num::NonZeroU32;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 use std::fs;
+use std::collections::HashMap;
 use std::path::Path;
 use tungstenite::{connect, Message as WsMessage};
 use winit::application::ApplicationHandler;
@@ -20,6 +21,24 @@ use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOPMOST, SWP_NO
 
 enum TwitchCommand {
     ChangeChannel(String),
+}
+
+// Chat history limit (set with the slider in the config window)
+const MIN_MESSAGES: usize = 5;
+const MAX_MESSAGES: usize = 25;
+
+// Config window layout, used to hit-test the sliders.
+// Each text line is CONFIG_LINE_HEIGHT px tall, starting CONFIG_TEXT_TOP px from the top.
+const CONFIG_TEXT_TOP: i32 = 10;
+const CONFIG_LINE_HEIGHT: i32 = 21; // ceil(16px font * 1.3)
+const FONT_SLIDER_LINE: i32 = 9;    // line index of the font-size slider
+const MSG_SLIDER_LINE: i32 = 11;    // line index of the max-messages slider
+const SLIDER_X_MIN: i32 = 10;       // clickable x-range of both sliders
+const SLIDER_X_MAX: i32 = 350;
+
+fn slider_row_hit(cursor_y: i32, line: i32) -> bool {
+    let top = CONFIG_TEXT_TOP + line * CONFIG_LINE_HEIGHT;
+    cursor_y >= top - 4 && cursor_y <= top + CONFIG_LINE_HEIGHT + 4
 }
 
 #[cfg(target_os = "windows")]
@@ -73,12 +92,13 @@ struct Settings {
     username_font_size: u16,
     message_font_size: u16,
     channel_valid: bool,
+    max_messages: usize,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            default_channel: "criken".to_string(),
+            default_channel: "crybee98".to_string(),
             config_width: 400,
             config_height: 300,
             config_x: 100,
@@ -90,6 +110,7 @@ impl Default for Settings {
             username_font_size: 16,
             message_font_size: 14,
             channel_valid: true,
+            max_messages: 15,
         }
     }
 }
@@ -127,6 +148,7 @@ fn load_settings() -> Settings {
                 "username_font_size" => settings.username_font_size = value.parse().unwrap_or(16),
                 "message_font_size" => settings.message_font_size = value.parse().unwrap_or(14),
                 "channel_valid" => settings.channel_valid = value.parse().unwrap_or(true),
+                "max_messages" => settings.max_messages = value.parse::<usize>().unwrap_or(15).clamp(MIN_MESSAGES, MAX_MESSAGES),
                 _ => {}
             }
         }
@@ -136,7 +158,7 @@ fn load_settings() -> Settings {
 
 fn save_settings(settings: &Settings) {
     let content = format!(
-        "# Twitch Chat Overlay Settings\n# Last generated automatically\n\ndefault_channel={}\nconfig_width={}\nconfig_height={}\nconfig_x={}\nconfig_y={}\nchat_width={}\nchat_height={}\nchat_x={}\nchat_y={}\nusername_font_size={}\nmessage_font_size={}\nchannel_valid={}\n",
+        "# Twitch Chat Overlay Settings\n# Last generated automatically\n\ndefault_channel={}\nconfig_width={}\nconfig_height={}\nconfig_x={}\nconfig_y={}\nchat_width={}\nchat_height={}\nchat_x={}\nchat_y={}\nusername_font_size={}\nmessage_font_size={}\nchannel_valid={}\nmax_messages={}\n",
         settings.default_channel,
         settings.config_width,
         settings.config_height,
@@ -149,21 +171,17 @@ fn save_settings(settings: &Settings) {
         settings.username_font_size,
         settings.message_font_size,
         settings.channel_valid,
+        settings.max_messages,
     );
     let _ = fs::write("settings.ini", content);
 }
 
-fn build_slider_display(font_size: i32) -> (usize, i32) {
-    let min_size = 8i32;
-    let max_size = 32i32;
+fn build_slider_display(value: i32, min: i32, max: i32) -> (usize, i32) {
     let bar_width = 30usize;
-    
-    let clamped_size = font_size.max(min_size).min(max_size);
-    let percentage = ((clamped_size - min_size) as f32) / ((max_size - min_size) as f32);
-    let active_count = (percentage * (bar_width as f32)).round() as usize;
-    
-    // Return active_count and total bar_width; rendering will apply opacity to each portion
-    (active_count, clamped_size)
+    let clamped = value.clamp(min, max);
+    let percentage = (clamped - min) as f32 / (max - min) as f32;
+    let active_count = (percentage * bar_width as f32).round() as usize;
+    (active_count, clamped)
 }
 
 // Struct to store a cleanly parsed Twitch Chat message
@@ -177,6 +195,8 @@ struct TwitchMessage {
 struct TextRenderer {
     font_system: cosmic_text::FontSystem,
     swash_cache: cosmic_text::SwashCache,
+    // Badge PNGs ("MOD" / "SUB") are loaded once; None = file not found
+    badge_cache: HashMap<String, Option<RgbaImage>>,
 }
 
 struct WindowSurface {
@@ -250,6 +270,15 @@ impl App {
             self.settings.chat_height = size.height;
         }
     }
+
+    // Auto-delete the oldest messages once we are over the user-chosen limit (5-25)
+    fn trim_messages(&mut self) {
+        let max = self.settings.max_messages.clamp(MIN_MESSAGES, MAX_MESSAGES);
+        let excess = self.chat_messages.len().saturating_sub(max);
+        if excess > 0 {
+            self.chat_messages.drain(..excess);
+        }
+    }
 }
 
 impl ApplicationHandler for App {
@@ -259,6 +288,7 @@ impl ApplicationHandler for App {
         self.text_renderer = Some(TextRenderer {
             font_system,
             swash_cache,
+            badge_cache: HashMap::new(),
         });
 
         // 1. Spawning Borderless Overlay chat panel FIRST
@@ -291,7 +321,7 @@ impl ApplicationHandler for App {
                     Window::default_attributes()
                         .with_title("ChatReal - Config")
                         .with_visible(true)
-                        .with_inner_size(PhysicalSize::new(self.settings.config_width, self.settings.config_height))
+                        .with_inner_size(PhysicalSize::new(self.settings.config_width, self.settings.config_height.max(330)))
                         .with_position(PhysicalPosition::new(self.settings.config_x, self.settings.config_y)),
                 )
                 .unwrap(),
@@ -322,23 +352,21 @@ impl ApplicationHandler for App {
     // Use AboutToWait to handle continuous rendering
     // Polls continuously to ensure chat updates even when unfocused
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        // Check if there are new chat messages to render
+        // Drain new chat messages, then auto-delete the oldest ones over the limit
+        let mut got_new = false;
         if let Some(msg_rx) = &self.msg_rx {
             while let Ok(msg) = msg_rx.try_recv() {
                 self.chat_messages.push(msg);
-                
-                // Keep only 15 most recent messages
-                while self.chat_messages.len() > 15 {
-                    self.chat_messages.remove(0);
-                }
-                
-                // Request redraw for both windows on message arrival
-                if let Some(chat) = &self.chat_surface {
-                    chat.window.request_redraw();
-                }
-                if let Some(config) = &self.config_surface {
-                    config.window.request_redraw();
-                }
+                got_new = true;
+            }
+        }
+        if got_new {
+            self.trim_messages();
+            if let Some(chat) = &self.chat_surface {
+                chat.window.request_redraw();
+            }
+            if let Some(config) = &self.config_surface {
+                config.window.request_redraw();
             }
         }
         
@@ -375,35 +403,32 @@ impl ApplicationHandler for App {
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Left, .. } => {
                 if is_config {
-                    if let Some(config) = &self.config_surface {
-                        let cursor_pos = self.last_cursor_pos;
-                        // Slider visual position: all 30 "=" chars with opacity, hitbox adjusted UP+LEFT 10px
-                        let slider_y_min = 285;
-                        let slider_y_max = 315;
-                        let slider_x_min = 10;
-                        let slider_x_max = 350;
-                        
-                        if cursor_pos.1 >= slider_y_min && cursor_pos.1 <= slider_y_max 
-                            && cursor_pos.0 >= slider_x_min && cursor_pos.0 <= slider_x_max {
-                            // Click on slider: map x position to font size (8-32)
-                            let slider_width = (slider_x_max - slider_x_min) as f32;
-                            let click_x = (cursor_pos.0 - slider_x_min) as f32;
-                            let percentage = (click_x / slider_width).clamp(0.0, 1.0);
-                            let new_font_size = (8.0_f32 + (percentage * 24.0)).round() as u16;
-                            
-                            // Capture window references before mutable borrow
-                            let config_window = config.window.clone();
-                            let has_chat = self.chat_surface.is_some();
-                            
-                            self.settings.message_font_size = new_font_size;
+                    let (cx, cy) = self.last_cursor_pos;
+                    if cx >= SLIDER_X_MIN && cx <= SLIDER_X_MAX {
+                        let pct = ((cx - SLIDER_X_MIN) as f32 / (SLIDER_X_MAX - SLIDER_X_MIN) as f32).clamp(0.0, 1.0);
+                        let mut changed = false;
+
+                        if slider_row_hit(cy, FONT_SLIDER_LINE) {
+                            // Font size slider: 8-32px
+                            self.settings.message_font_size = (8.0_f32 + pct * 24.0).round() as u16;
+                            changed = true;
+                        } else if slider_row_hit(cy, MSG_SLIDER_LINE) {
+                            // Max messages slider: 5-25
+                            let span = (MAX_MESSAGES - MIN_MESSAGES) as f32;
+                            let v = (MIN_MESSAGES as f32 + pct * span).round() as usize;
+                            self.settings.max_messages = v.clamp(MIN_MESSAGES, MAX_MESSAGES);
+                            self.trim_messages(); // apply immediately if the limit was lowered
+                            changed = true;
+                        }
+
+                        if changed {
                             self.update_settings_from_windows();
                             save_settings(&self.settings);
-                            eprintln!("[DEBUG] Font size set to: {}", self.settings.message_font_size);
-                            config_window.request_redraw();
-                            if has_chat {
-                                if let Some(chat) = &self.chat_surface {
-                                    chat.window.request_redraw();
-                                }
+                            if let Some(config) = &self.config_surface {
+                                config.window.request_redraw();
+                            }
+                            if let Some(chat) = &self.chat_surface {
+                                chat.window.request_redraw();
                             }
                         }
                     }
@@ -538,73 +563,47 @@ impl ApplicationHandler for App {
                         String::new()
                     };
 
-                    let (active_count, display_size) = build_slider_display(self.settings.message_font_size as i32);
+                    let (font_active, font_display) = build_slider_display(self.settings.message_font_size as i32, 8, 32);
+                    let (msg_active, msg_display) = build_slider_display(self.settings.max_messages as i32, MIN_MESSAGES as i32, MAX_MESSAGES as i32);
                     let bar_width = 30usize;
-                    let inactive_count = bar_width - active_count;
-                    
-                    // Build config_text as Vec<(&str, Attrs)> for set_rich_text compatibility
-                    let mut config_text: Vec<(&str, cosmic_text::Attrs)> = vec![
-                        (
-                            "TWITCH CONTROL CONSOLE\n\n",
-                            cosmic_text::Attrs::new().color(cosmic_text::Color::rgb(255, 255, 255)),
-                        ),
-                        (
-                            Box::leak(format!("Active Channel: #{}\n\n", self.current_channel).into_boxed_str()),
-                            cosmic_text::Attrs::new().color(cosmic_text::Color::rgb(150, 100, 255)),
-                        ),
-                        (
-                            "----------------------------------------\n",
-                            cosmic_text::Attrs::new().color(cosmic_text::Color::rgb(100, 100, 100)),
-                        ),
-                        (
-                            "Enter Target Channel Name:\n > ",
-                            cosmic_text::Attrs::new().color(cosmic_text::Color::rgb(200, 200, 200)),
-                        ),
-                        (&wrapped_input_display, cosmic_text::Attrs::new().color(cosmic_text::Color::rgb(255, 255, 100))),
-                        ("_\n", cosmic_text::Attrs::new().color(cosmic_text::Color::rgb(255, 255, 100))),
-                        (
-                            "\n----------------------------------------\n",
-                            cosmic_text::Attrs::new().color(cosmic_text::Color::rgb(100, 100, 100)),
-                        ),
-                        (
-                            "Message Font Size - Click the slider below:\n",
-                            cosmic_text::Attrs::new().color(cosmic_text::Color::rgb(200, 200, 200)),
-                        ),
-                        (
-                            "[F1] -> Toggle Chat Window Frame/Borders\n",
-                            cosmic_text::Attrs::new().color(cosmic_text::Color::rgb(150, 150, 150)),
-                        ),
-                        (
-                            "[Enter] -> Confirm & Connect to Channel\n",
-                            cosmic_text::Attrs::new().color(cosmic_text::Color::rgb(150, 150, 150)),
-                        ),
-                        (
-                            "Click slider to adjust font size (8-32px)\n",
-                            cosmic_text::Attrs::new().color(cosmic_text::Color::rgb(150, 150, 150)),
-                        ),
+
+                    // Owned strings that live as long as config_text (no Box::leak needed)
+                    let active_channel_line = format!("Active Channel: #{}\n\n", self.current_channel);
+                    let font_bar_on = "=".repeat(font_active);
+                    let font_bar_off = "=".repeat(bar_width - font_active);
+                    let font_value = format!("] {}px\n", font_display);
+                    let msg_bar_on = "=".repeat(msg_active);
+                    let msg_bar_off = "=".repeat(bar_width - msg_active);
+                    let msg_value = format!("] {} msgs\n", msg_display);
+
+                    let c = |r: u8, g: u8, b: u8| cosmic_text::Attrs::new().color(cosmic_text::Color::rgb(r, g, b));
+                    let slider_on = cosmic_text::Attrs::new().color(cosmic_text::Color::rgba(150, 200, 255, 255));
+                    let slider_off = cosmic_text::Attrs::new().color(cosmic_text::Color::rgba(150, 200, 255, 77));
+
+                    // Line layout (matters for slider hit-testing, see FONT_SLIDER_LINE / MSG_SLIDER_LINE):
+                    // 0 title, 1 blank, 2 channel, 3 blank, 4 rule, 5 label, 6 input, 7 rule,
+                    // 8 font label, 9 font slider, 10 msgs label, 11 msgs slider, 12-13 hints
+                    let config_text: Vec<(&str, cosmic_text::Attrs)> = vec![
+                        ("TWITCH CONTROL CONSOLE\n\n", c(255, 255, 255)),
+                        (active_channel_line.as_str(), c(150, 100, 255)),
+                        ("----------------------------------------\n", c(100, 100, 100)),
+                        ("Enter Target Channel Name:\n > ", c(200, 200, 200)),
+                        (wrapped_input_display.as_str(), c(255, 255, 100)),
+                        ("_\n", c(255, 255, 100)),
+                        ("----------------------------------------\n", c(100, 100, 100)),
+                        ("Message font size (8-32px) - click the bar:\n", c(200, 200, 200)),
+                        ("[", c(150, 200, 255)),
+                        (font_bar_on.as_str(), slider_on.clone()),
+                        (font_bar_off.as_str(), slider_off.clone()),
+                        (font_value.as_str(), c(150, 150, 150)),
+                        ("Messages kept (5-25) - click the bar:\n", c(200, 200, 200)),
+                        ("[", c(150, 200, 255)),
+                        (msg_bar_on.as_str(), slider_on.clone()),
+                        (msg_bar_off.as_str(), slider_off.clone()),
+                        (msg_value.as_str(), c(150, 150, 150)),
+                        ("[F1] -> Toggle Chat Window Frame/Borders\n", c(150, 150, 150)),
+                        ("[Enter] -> Confirm & Connect to Channel\n", c(150, 150, 150)),
                     ];
-                    
-                    // Build slider bar with opacity: active portion bright, inactive portion dimmed
-                    config_text.push(("[", cosmic_text::Attrs::new().color(cosmic_text::Color::rgb(150, 200, 255))));
-                    
-                    if active_count > 0 {
-                        config_text.push((
-                            Box::leak(std::iter::repeat('=').take(active_count).collect::<String>().into_boxed_str()),
-                            cosmic_text::Attrs::new().color(cosmic_text::Color::rgba(150, 200, 255, 255)),
-                        ));
-                    }
-                    
-                    if inactive_count > 0 {
-                        config_text.push((
-                            Box::leak(std::iter::repeat('=').take(inactive_count).collect::<String>().into_boxed_str()),
-                            cosmic_text::Attrs::new().color(cosmic_text::Color::rgba(150, 200, 255, 77)),
-                        ));
-                    }
-                    
-                    config_text.push((
-                        Box::leak(format!("] {}px", display_size).into_boxed_str()),
-                        cosmic_text::Attrs::new().color(cosmic_text::Color::rgb(150, 150, 150)),
-                    ));
 
                     text_buffer.set_rich_text(
                         config_text.iter().cloned(),
@@ -630,189 +629,83 @@ impl ApplicationHandler for App {
                     let surf_state = self.chat_surface.as_mut().unwrap();
                     let size = surf_state.window.inner_size();
                     
-                    eprintln!("[DEBUG] Chat overlay render: size={}x{}, messages={}", 
+                    eprintln!("[DEBUG] Chat overlay render: size={}x{}, messages={}",
                              size.width, size.height, self.chat_messages.len());
-                    
+
                     let mut buffer = surf_state.surface.buffer_mut().unwrap();
                     buffer.fill(0x00000000); // Transparent - invisible overlay
 
-
-                    // Use message font size for the base metrics (for messages and separators)
+                    let width_px = size.width as i32;
+                    let height_px = size.height as i32;
                     let msg_font_size = self.settings.message_font_size as f32;
                     let msg_line_height = (msg_font_size * 1.3).ceil();
-                    
-                    let mut text_buffer = cosmic_text::Buffer::new(
-                        &mut tr.font_system,
-                        cosmic_text::Metrics::new(msg_font_size, msg_line_height),
-                    );
+                    let badge_size = (msg_font_size * 1.2).ceil() as i32;
+                    let badge_gap = 2i32;
+                    let badge_y_offset = ((msg_line_height as i32 - badge_size) / 2).max(0); // center on first line
+                    let pad = 10i32;
 
-                    // Set boundaries to match the window's physical layout dimensions
-                    text_buffer.set_size(Some(size.width as f32), Some(size.height as f32));
-
-                    // ENABLE WORD WRAPPING HERE
-                    // This forces cosmic-text to compute line-breaks at whitespace boundaries
-                    text_buffer.set_wrap(cosmic_text::Wrap::Word);
-
-                    // Track badge information: (badge_type, message_index, line_y_position)
-                    // Will be populated during text rendering
-                    let mut badges_to_render: Vec<(String, usize)> = Vec::new();
-
-                    let text_spans: Vec<(String, cosmic_text::Attrs)> = {
-                        let mut spans = Vec::new();
-                        for (msg_idx, msg) in self.chat_messages.iter().rev().enumerate() {
-                            // Collect badges for this message (without rendering as text)
-                            if !msg.badges.is_empty() {
-                                let badge_types = format_badges(&msg.badges);
-                                for badge_type in badge_types {
-                                    badges_to_render.push((badge_type.clone(), msg_idx));
-                                }
-                            }
-                            
-                            // Render message text without badge placeholders
-                            spans.push((
-                                msg.user.clone(),
-                                cosmic_text::Attrs::new().color(msg.color),
-                            ));
-                            spans.push((
-                                ": ".to_string(),
-                                cosmic_text::Attrs::new().color(cosmic_text::Color::rgb(200, 200, 200)),
-                            ));
-                            spans.push((
-                                msg.message.clone(),
-                                cosmic_text::Attrs::new().color(cosmic_text::Color::rgb(255, 255, 255)),
-                            ));
-                            spans.push((
-                                "\n".to_string(),
-                                cosmic_text::Attrs::new().color(cosmic_text::Color::rgb(0, 0, 0)),
-                            ));
+                    // Each message is laid out on its own, newest at the top. A new message
+                    // pushes every older one down by its height, and because the badges are
+                    // drawn at the same y as their message they move down with it.
+                    let mut y = pad;
+                    for msg in self.chat_messages.iter().rev() {
+                        if y >= height_px {
+                            break; // everything below is outside the window
                         }
-                        spans
-                    };
-                    
-                    let total_chars: usize = text_spans.iter().map(|(s, _)| s.len()).sum();
-                    eprintln!("[DEBUG] Chat text spans: {} spans built, {} total chars", text_spans.len(), total_chars);
-                    
-                    for (i, (s, _)) in text_spans.iter().enumerate() {
-                        if i < 10 {  // Log first 10 spans for debugging
-                            eprintln!("[DEBUG]   Span {}: {:?}", i, s);
-                        }
-                    }
 
-                    // Pre-compute y-position for each message independently
-                    let badge_size = (msg_font_size as f32 * 1.2).ceil() as u32;
-                    let mut max_badge_width = 0;
-                    
-                    for msg in self.chat_messages.iter() {
-                        if !msg.badges.is_empty() {
-                            let badge_types = format_badges(&msg.badges);
-                            let msg_badge_width = (badge_size as i32 * badge_types.len() as i32) + (2 * (badge_types.len() as i32 - 1));
-                            max_badge_width = max_badge_width.max(msg_badge_width);
-                        }
-                    }
-                    
-                    let text_x_offset = if max_badge_width > 0 { max_badge_width + 5 } else { 10 };
-                    
-                    // Define attrs for measurement phase
-                    let name_attrs = cosmic_text::Attrs::new();
-                    let msg_attrs = cosmic_text::Attrs::new();
-                    
-                    // Measure each message independently to capture exact y-position
-                    let mut msg_y_positions = vec![10i32; self.chat_messages.len()];
-                    for (msg_idx, msg) in self.chat_messages.iter().enumerate() {
-                        let username_text = &msg.user;
-                        let message_text = &msg.message;
-                        
-                        // Build text for this message only
-                        let msg_spans = vec![
-                            (username_text.clone(), name_attrs.clone()),
-                            (": ".to_string(), msg_attrs.clone()),
-                            (message_text.clone(), msg_attrs.clone()),
+                        let badge_types = format_badges(&msg.badges);
+                        let badges_width = if badge_types.is_empty() {
+                            0
+                        } else {
+                            badge_types.len() as i32 * (badge_size + badge_gap)
+                        };
+                        let text_x = pad + badges_width;
+                        let wrap_width = (width_px - text_x - pad).max(50) as f32;
+
+                        let mut text_buffer = cosmic_text::Buffer::new(
+                            &mut tr.font_system,
+                            cosmic_text::Metrics::new(msg_font_size, msg_line_height),
+                        );
+                        text_buffer.set_size(Some(wrap_width), Some(4000.0));
+                        text_buffer.set_wrap(cosmic_text::Wrap::Word);
+
+                        let spans: Vec<(&str, cosmic_text::Attrs)> = vec![
+                            (msg.user.as_str(), cosmic_text::Attrs::new().color(msg.color)),
+                            (": ", cosmic_text::Attrs::new().color(cosmic_text::Color::rgb(200, 200, 200))),
+                            (msg.message.as_str(), cosmic_text::Attrs::new().color(cosmic_text::Color::rgb(255, 255, 255))),
                         ];
-                        
-                        let attrs_spans: Vec<(&str, cosmic_text::Attrs)> = msg_spans
-                            .iter()
-                            .map(|(s, a)| (s.as_str(), a.clone()))
-                            .collect();
-                        
-                        // Measure in isolation
-                        let metrics = cosmic_text::Metrics::new(size.width as f32, size.height as f32);
-                        let mut measure_buffer = cosmic_text::Buffer::new(&mut tr.font_system, metrics);
-                        measure_buffer.set_rich_text(
-                            attrs_spans,
+                        text_buffer.set_rich_text(
+                            spans,
                             &cosmic_text::Attrs::new(),
                             cosmic_text::Shaping::Advanced,
                             None,
                         );
-                        measure_buffer.shape_until_scroll(&mut tr.font_system, false);
-                        
-                        // Capture y from first glyph
-                        let mut first_y_captured = false;
-                        measure_buffer.draw(
-                            &mut tr.font_system,
-                            &mut tr.swash_cache,
-                            cosmic_text::Color::rgb(255, 255, 255),
-                            |_x, y, _w, _h, _color| {
-                                if !first_y_captured {
-                                    msg_y_positions[msg_idx] = y + 10; // base_offset_y = 10
-                                    first_y_captured = true;
-                                }
-                            },
-                        );
-                    }
-                    
-                    // Now build composite text with all messages
-                    let attrs_spans: Vec<(&str, cosmic_text::Attrs)> = text_spans
-                        .iter()
-                        .map(|(s, a)| (s.as_str(), a.clone()))
-                        .collect();
+                        text_buffer.shape_until_scroll(&mut tr.font_system, false);
 
-                    text_buffer.set_rich_text(
-                        attrs_spans,
-                        &cosmic_text::Attrs::new(),
-                        cosmic_text::Shaping::Advanced,
-                        None,
-                    );
-                    text_buffer.shape_until_scroll(&mut tr.font_system, false);
-                    
-                    // Render composite text to buffer
-                    blit_text_to_buffer(
-                        &mut buffer,
-                        &mut text_buffer,
-                        tr,
-                        size.width as i32,
-                        size.height as i32,
-                        text_x_offset,
-                        &msg_y_positions,
-                    );
+                        // Height of this message = number of wrapped lines * line height
+                        let line_count = text_buffer.layout_runs().count().max(1) as i32;
+                        let msg_height = line_count * msg_line_height as i32;
 
-                    // Calculate line heights and render badges at the start of each message line
-                    let badge_size = (msg_font_size as f32 * 1.2).ceil() as u32;
-                    let badge_y_offset = ((msg_line_height - badge_size as f32) / 2.0).ceil() as i32; // Center vertically in line
-                    
-                    // Render badges at the start of each message
-                    for (idx, msg) in self.chat_messages.iter().rev().enumerate() {
-                        if !msg.badges.is_empty() {
-                            let msg_idx = self.chat_messages.len() - 1 - idx; // Convert rev index back to forward index
-                            let badge_line_y = msg_y_positions.get(msg_idx).copied()
-                                .unwrap_or(10 + (msg_idx as i32 * msg_line_height.ceil() as i32));
-                            
-                            let badge_types = format_badges(&msg.badges);
-                            let mut x_pos = 10;
-                            for badge_type in badge_types {
-                                if let Some(badge_img) = load_badge_image(&badge_type) {
-                                    composite_badge_image(
-                                        &mut buffer,
-                                        &badge_img,
-                                        x_pos,
-                                        badge_line_y + badge_y_offset,
-                                        badge_size,
-                                        size.width as i32,
-                                        size.height as i32,
-                                    );
-                                    x_pos += badge_size as i32 + 2; // Next badge with 2px spacing
-                                }
+                        blit_text_at(&mut buffer, &mut text_buffer, tr, width_px, height_px, text_x, y);
+
+                        // Badges (MOD / SUB) sit left of the name, on the message's first line
+                        let mut badge_x = pad;
+                        for badge_type in &badge_types {
+                            if let Some(img) = get_badge_image(&mut tr.badge_cache, badge_type) {
+                                composite_badge_image(
+                                    &mut buffer,
+                                    img,
+                                    badge_x,
+                                    y + badge_y_offset,
+                                    badge_size as u32,
+                                    width_px,
+                                    height_px,
+                                );
                             }
+                            badge_x += badge_size + badge_gap;
                         }
+
+                        y += msg_height;
                     }
 
                     buffer.present().unwrap();
@@ -889,6 +782,41 @@ fn blit_text_to_buffer<'a>(
     msg_y_positions
 }
 
+
+/// Draws a text buffer into the framebuffer with its top-left corner at (origin_x, origin_y)
+fn blit_text_at(
+    pixels: &mut [u32],
+    text_buffer: &mut cosmic_text::Buffer,
+    tr: &mut TextRenderer,
+    width: i32,
+    height: i32,
+    origin_x: i32,
+    origin_y: i32,
+) {
+    text_buffer.draw(
+        &mut tr.font_system,
+        &mut tr.swash_cache,
+        cosmic_text::Color::rgb(255, 255, 255),
+        |x, y, w, h, color| {
+            if color.a() == 0 {
+                return;
+            }
+            for row in 0..h as i32 {
+                for col in 0..w as i32 {
+                    let pixel_x = origin_x + x + col;
+                    let pixel_y = origin_y + y + row;
+                    if pixel_x >= 0 && pixel_x < width && pixel_y >= 0 && pixel_y < height {
+                        pixels[(pixel_y * width + pixel_x) as usize] = ((color.a() as u32) << 24)
+                            | ((color.r() as u32) << 16)
+                            | ((color.g() as u32) << 8)
+                            | (color.b() as u32);
+                    }
+                }
+            }
+        },
+    );
+}
+
 /// Validates and truncates text to fit within window bounds
 /// Returns a vector of text lines that fit within the available space
 fn validate_and_wrap_text(text: &str, max_width: i32, max_height: i32, font_size: u16, line_height: i32) -> Vec<String> {
@@ -955,30 +883,47 @@ fn format_badges(badges_str: &str) -> Vec<String> {
     badge_list
 }
 
-// Load a PNG badge image from the img directory (relative to executable)
+// Load a PNG badge image from the img directory.
+// Looks for img/MOD.png and img/SUB.png (also lowercase names) next to the project or the exe.
 fn load_badge_image(badge_type: &str) -> Option<RgbaImage> {
-    // Try multiple paths to find the badge image:
-    // 1. img/ (if running from project root)
-    // 2. src/img/ (if running from source)
-    // 3. ../img/ (if running from target/release)
-    let possible_paths = vec![
-        format!("img/{}.png", badge_type),
-        format!("src/img/{}.png", badge_type),
-        format!("../img/{}.png", badge_type),
-        format!("../../img/{}.png", badge_type),
+    let names = [badge_type.to_string(), badge_type.to_lowercase()];
+    let mut dirs: Vec<std::path::PathBuf> = vec![
+        "img".into(),
+        "src/img".into(),
+        "../img".into(),
+        "../../img".into(),
     ];
-    
-    for img_path in possible_paths {
-        if let Ok(img) = image::open(&img_path) {
-            return Some(img.to_rgba8());
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            dirs.push(dir.join("img"));
         }
     }
-    
+
+    for dir in &dirs {
+        for name in &names {
+            let path = dir.join(format!("{}.png", name));
+            if let Ok(img) = image::open(&path) {
+                return Some(img.to_rgba8());
+            }
+        }
+    }
+
     eprintln!("[ERROR] Failed to load badge image {}.png from any search path", badge_type);
     None
 }
 
-// Composite a badge image onto the framebuffer with alpha blending
+// Cached lookup: each badge file is read from disk once, not on every redraw
+fn get_badge_image<'a>(
+    cache: &'a mut HashMap<String, Option<RgbaImage>>,
+    badge_type: &str,
+) -> Option<&'a RgbaImage> {
+    cache
+        .entry(badge_type.to_string())
+        .or_insert_with(|| load_badge_image(badge_type))
+        .as_ref()
+}
+
+// Composite a badge image onto the framebuffer, scaled to target_height (bilinear, alpha blended)
 fn composite_badge_image(
     buffer: &mut [u32],
     badge_image: &RgbaImage,
@@ -988,67 +933,77 @@ fn composite_badge_image(
     buffer_width: i32,
     buffer_height: i32,
 ) {
-    // Calculate the scale factor to match badge height to target height
-    let img_height = badge_image.height();
-    let scale = if img_height > 0 {
-        target_height as f32 / img_height as f32
-    } else {
-        1.0
-    };
-    
-    let _scaled_width = ((badge_image.width() as f32) * scale).ceil() as u32;
-    let _scaled_height = target_height;
-    
-    // Iterate through the badge image pixels and composite them
-    for img_y in 0..badge_image.height() {
-        let scaled_y = ((img_y as f32) * scale) as i32;
-        
-        for img_x in 0..badge_image.width() {
-            let scaled_x = ((img_x as f32) * scale) as i32;
-            
-            // Calculate target position in framebuffer
-            let dst_x = target_x + scaled_x;
-            let dst_y = target_y + scaled_y;
-            
-            // Skip if outside framebuffer bounds
-            if dst_x < 0 || dst_x >= buffer_width || dst_y < 0 || dst_y >= buffer_height {
+    let src_w = badge_image.width();
+    let src_h = badge_image.height();
+    if src_w == 0 || src_h == 0 || target_height == 0 {
+        return;
+    }
+
+    let scale = target_height as f32 / src_h as f32;
+    let dst_w = ((src_w as f32 * scale).round() as i32).max(1);
+    let dst_h = target_height as i32;
+
+    // Walk the destination pixels and sample the source, so scaling up or down leaves no holes
+    for dy in 0..dst_h {
+        for dx in 0..dst_w {
+            let px = target_x + dx;
+            let py = target_y + dy;
+            if px < 0 || px >= buffer_width || py < 0 || py >= buffer_height {
                 continue;
             }
-            
-            let pixel = badge_image.get_pixel(img_x, img_y);
-            let alpha = pixel[3] as f32 / 255.0;
-            
-            // Skip fully transparent pixels
-            if alpha < 0.01 {
-                continue;
+
+            let sx = ((dx as f32 + 0.5) / scale - 0.5).clamp(0.0, (src_w - 1) as f32);
+            let sy = ((dy as f32 + 0.5) / scale - 0.5).clamp(0.0, (src_h - 1) as f32);
+            let x0 = sx.floor() as u32;
+            let y0 = sy.floor() as u32;
+            let x1 = (x0 + 1).min(src_w - 1);
+            let y1 = (y0 + 1).min(src_h - 1);
+            let fx = sx - x0 as f32;
+            let fy = sy - y0 as f32;
+
+            // Bilinear blend of premultiplied colour
+            let mut r = 0.0f32;
+            let mut g = 0.0f32;
+            let mut b = 0.0f32;
+            let mut a = 0.0f32;
+            let taps = [
+                (x0, y0, (1.0 - fx) * (1.0 - fy)),
+                (x1, y0, fx * (1.0 - fy)),
+                (x0, y1, (1.0 - fx) * fy),
+                (x1, y1, fx * fy),
+            ];
+            for &(tx, ty, weight) in taps.iter() {
+                let p = badge_image.get_pixel(tx, ty);
+                let pa = p[3] as f32 / 255.0;
+                r += (p[0] as f32 / 255.0) * pa * weight;
+                g += (p[1] as f32 / 255.0) * pa * weight;
+                b += (p[2] as f32 / 255.0) * pa * weight;
+                a += pa * weight;
             }
-            
-            let idx = (dst_y * buffer_width + dst_x) as usize;
+            if a < 0.004 {
+                continue; // fully transparent
+            }
+
+            let idx = (py * buffer_width + px) as usize;
             if idx >= buffer.len() {
                 continue;
             }
-            
-            // Get existing pixel
+
             let existing = buffer[idx];
-            let existing_a = ((existing >> 24) & 0xFF) as f32 / 255.0;
-            let existing_r = ((existing >> 16) & 0xFF) as f32 / 255.0;
-            let existing_g = ((existing >> 8) & 0xFF) as f32 / 255.0;
-            let existing_b = (existing & 0xFF) as f32 / 255.0;
-            
-            // Alpha blend: new_color = src * src_alpha + dst * (1 - src_alpha)
-            let src_r = pixel[0] as f32 / 255.0;
-            let src_g = pixel[1] as f32 / 255.0;
-            let src_b = pixel[2] as f32 / 255.0;
-            
-            let blended_r = (src_r * alpha + existing_r * (1.0 - alpha)) * 255.0;
-            let blended_g = (src_g * alpha + existing_g * (1.0 - alpha)) * 255.0;
-            let blended_b = (src_b * alpha + existing_b * (1.0 - alpha)) * 255.0;
-            let blended_a = (alpha + existing_a * (1.0 - alpha)) * 255.0;
-            
-            buffer[idx] = ((blended_a as u32) << 24)
-                | ((blended_r as u32) << 16)
-                | ((blended_g as u32) << 8)
-                | (blended_b as u32);
+            let ea = ((existing >> 24) & 0xFF) as f32 / 255.0;
+            let er = ((existing >> 16) & 0xFF) as f32 / 255.0;
+            let eg = ((existing >> 8) & 0xFF) as f32 / 255.0;
+            let eb = (existing & 0xFF) as f32 / 255.0;
+
+            let out_r = (r + er * (1.0 - a)).min(1.0) * 255.0;
+            let out_g = (g + eg * (1.0 - a)).min(1.0) * 255.0;
+            let out_b = (b + eb * (1.0 - a)).min(1.0) * 255.0;
+            let out_a = (a + ea * (1.0 - a)).min(1.0) * 255.0;
+
+            buffer[idx] = ((out_a as u32) << 24)
+                | ((out_r as u32) << 16)
+                | ((out_g as u32) << 8)
+                | (out_b as u32);
         }
     }
 }
