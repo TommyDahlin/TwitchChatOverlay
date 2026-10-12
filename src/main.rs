@@ -1,3 +1,6 @@
+// Release builds run as a GUI app (no console window); debug builds keep the console for logs
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use std::num::NonZeroU32;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
@@ -93,12 +96,13 @@ struct Settings {
     message_font_size: u16,
     channel_valid: bool,
     max_messages: usize,
+    drag_enabled: bool, // allow dragging the borderless chat window with the mouse
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            default_channel: "crybee98".to_string(),
+            default_channel: "criken".to_string(),
             config_width: 400,
             config_height: 300,
             config_x: 100,
@@ -111,6 +115,7 @@ impl Default for Settings {
             message_font_size: 14,
             channel_valid: true,
             max_messages: 15,
+            drag_enabled: true,
         }
     }
 }
@@ -149,6 +154,7 @@ fn load_settings() -> Settings {
                 "message_font_size" => settings.message_font_size = value.parse().unwrap_or(14),
                 "channel_valid" => settings.channel_valid = value.parse().unwrap_or(true),
                 "max_messages" => settings.max_messages = value.parse::<usize>().unwrap_or(15).clamp(MIN_MESSAGES, MAX_MESSAGES),
+                "drag_enabled" => settings.drag_enabled = value.parse().unwrap_or(true),
                 _ => {}
             }
         }
@@ -158,7 +164,7 @@ fn load_settings() -> Settings {
 
 fn save_settings(settings: &Settings) {
     let content = format!(
-        "# Twitch Chat Overlay Settings\n# Last generated automatically\n\ndefault_channel={}\nconfig_width={}\nconfig_height={}\nconfig_x={}\nconfig_y={}\nchat_width={}\nchat_height={}\nchat_x={}\nchat_y={}\nusername_font_size={}\nmessage_font_size={}\nchannel_valid={}\nmax_messages={}\n",
+        "# Twitch Chat Overlay Settings\n# Last generated automatically\n\ndefault_channel={}\nconfig_width={}\nconfig_height={}\nconfig_x={}\nconfig_y={}\nchat_width={}\nchat_height={}\nchat_x={}\nchat_y={}\nusername_font_size={}\nmessage_font_size={}\nchannel_valid={}\nmax_messages={}\ndrag_enabled={}\n",
         settings.default_channel,
         settings.config_width,
         settings.config_height,
@@ -172,6 +178,7 @@ fn save_settings(settings: &Settings) {
         settings.message_font_size,
         settings.channel_valid,
         settings.max_messages,
+        settings.drag_enabled,
     );
     let _ = fs::write("settings.ini", content);
 }
@@ -291,12 +298,16 @@ impl ApplicationHandler for App {
             badge_cache: HashMap::new(),
         });
 
+        // Window/taskbar icon (ChatReal Logo.png, embedded in the exe)
+        let app_icon = load_app_icon();
+
         // 1. Spawning Borderless Overlay chat panel FIRST
         let chat_win = std::sync::Arc::new(
             event_loop
                 .create_window(
                     Window::default_attributes()
                         .with_title("Twitch Chat Overlays")
+                        .with_window_icon(app_icon.clone())
                         .with_transparent(true)
                         .with_decorations(self.chat_decorations)
                         .with_inner_size(PhysicalSize::new(self.settings.chat_width, self.settings.chat_height))
@@ -320,8 +331,9 @@ impl ApplicationHandler for App {
                 .create_window(
                     Window::default_attributes()
                         .with_title("ChatReal - Config")
+                        .with_window_icon(app_icon.clone())
                         .with_visible(true)
-                        .with_inner_size(PhysicalSize::new(self.settings.config_width, self.settings.config_height.max(330)))
+                        .with_inner_size(PhysicalSize::new(self.settings.config_width, self.settings.config_height.max(345)))
                         .with_position(PhysicalPosition::new(self.settings.config_x, self.settings.config_y)),
                 )
                 .unwrap(),
@@ -432,6 +444,11 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
+                } else if is_chat && self.settings.drag_enabled && !self.chat_decorations {
+                    // Borderless + drag enabled: hand the move over to the OS while the button is held
+                    if let Some(chat) = &self.chat_surface {
+                        let _ = chat.window.drag_window();
+                    }
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -439,14 +456,32 @@ impl ApplicationHandler for App {
             }
             // Behåll ENDAST denna KeyboardInput-arm och ta bort eventuella andra kopior:
             WindowEvent::KeyboardInput { event: KeyEvent { state: ElementState::Pressed, logical_key, text, .. }, .. } => {
-                if is_config {
-                    match logical_key {
-                        Key::Named(NamedKey::F1) => {
-                            self.chat_decorations = !self.chat_decorations;
-                            if let Some(chat) = &self.chat_surface {
-                                chat.window.set_decorations(self.chat_decorations);
-                            }
+                // F1 / F2 work from both the config window and the chat window
+                let mut hotkey = true;
+                match &logical_key {
+                    Key::Named(NamedKey::F1) => {
+                        self.chat_decorations = !self.chat_decorations;
+                        if let Some(chat) = &self.chat_surface {
+                            chat.window.set_decorations(self.chat_decorations);
                         }
+                    }
+                    Key::Named(NamedKey::F2) => {
+                        self.settings.drag_enabled = !self.settings.drag_enabled;
+                        save_settings(&self.settings);
+                    }
+                    _ => hotkey = false,
+                }
+
+                if hotkey {
+                    if let Some(config) = &self.config_surface {
+                        config.window.request_redraw();
+                    }
+                    if let Some(chat) = &self.chat_surface {
+                        chat.window.request_redraw();
+                    }
+                } else if is_config {
+                    // Typing the channel name only makes sense in the config window
+                    match logical_key {
                         Key::Named(NamedKey::Enter) => {
                             let trimmed = self.input_buffer.trim().to_lowercase();
                             if !trimmed.is_empty() {
@@ -576,6 +611,10 @@ impl ApplicationHandler for App {
                     let msg_bar_off = "=".repeat(bar_width - msg_active);
                     let msg_value = format!("] {} msgs\n", msg_display);
 
+                    let drag_line = format!(
+                        "[F2] -> Drag chat window with mouse: {} (needs borders hidden)\n",
+                        if self.settings.drag_enabled { "ON" } else { "OFF" }
+                    );
                     let c = |r: u8, g: u8, b: u8| cosmic_text::Attrs::new().color(cosmic_text::Color::rgb(r, g, b));
                     let slider_on = cosmic_text::Attrs::new().color(cosmic_text::Color::rgba(150, 200, 255, 255));
                     let slider_off = cosmic_text::Attrs::new().color(cosmic_text::Color::rgba(150, 200, 255, 77));
@@ -601,8 +640,9 @@ impl ApplicationHandler for App {
                         (msg_bar_on.as_str(), slider_on.clone()),
                         (msg_bar_off.as_str(), slider_off.clone()),
                         (msg_value.as_str(), c(150, 150, 150)),
-                        ("[F1] -> Toggle Chat Window Frame/Borders\n", c(150, 150, 150)),
+                        ("[F1] -> Toggle Chat Window Frame/Borders (any window)\n", c(150, 150, 150)),
                         ("[Enter] -> Confirm & Connect to Channel\n", c(150, 150, 150)),
+                        (drag_line.as_str(), c(150, 150, 150)),
                     ];
 
                     text_buffer.set_rich_text(
@@ -1221,6 +1261,34 @@ fn spawn_twitch_worker(tx: std::sync::mpsc::Sender<TwitchMessage>, cmd_rx: std::
             thread::sleep(std::time::Duration::from_millis(10));
         }
     });
+}
+
+// Window/taskbar icon. The PNG is compiled into the exe, so it works without the img folder.
+const APP_ICON_PNG: &[u8] = include_bytes!("../img/ChatReal Logo.png");
+
+fn load_app_icon() -> Option<winit::window::Icon> {
+    let img = match image::load_from_memory(APP_ICON_PNG) {
+        Ok(i) => i.to_rgba8(),
+        Err(e) => {
+            eprintln!("[ERROR] Could not decode ChatReal Logo.png: {}", e);
+            return None;
+        }
+    };
+
+    // Fit into a transparent 256x256 square so non-square logos aren't stretched
+    const SIDE: u32 = 256;
+    let (w, h) = img.dimensions();
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let scale = SIDE as f32 / w.max(h) as f32;
+    let nw = ((w as f32 * scale).round() as u32).clamp(1, SIDE);
+    let nh = ((h as f32 * scale).round() as u32).clamp(1, SIDE);
+    let resized = image::imageops::resize(&img, nw, nh, image::imageops::FilterType::Lanczos3);
+    let mut canvas = RgbaImage::new(SIDE, SIDE);
+    image::imageops::overlay(&mut canvas, &resized, ((SIDE - nw) / 2) as i64, ((SIDE - nh) / 2) as i64);
+
+    winit::window::Icon::from_rgba(canvas.into_raw(), SIDE, SIDE).ok()
 }
 
 fn main() {

@@ -34,7 +34,7 @@ A lightweight, always-on-top chat overlay for Twitch streamers to display live c
    - The **Chat Overlay** is hidden until you connect to a channel
 
 2. **Connect to Twitch**
-   - In the Config Window, type a channel name (e.g., `#criken`)
+   - In the Config Window, type a channel name (e.g., `#crybee98`)
    - Press `Enter`
    - The bot connects as `justinfan1234` (anonymous read-only bot)
    - Chat messages appear in the overlay
@@ -78,7 +78,7 @@ message_font_size=14
 username_font_size=16
 
 [chat_connection]
-default_channel=criken
+default_channel=crybee98
 ```
 
 You can edit this file directly to customize:

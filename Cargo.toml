@@ -1,6 +1,6 @@
 [package]
 name = "TwitchChatOverlay"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
 authors = ["Tommy Dahlin"]
 description = "A Twitch chat overlay for streaming with always-on-top functionality and badge support"
