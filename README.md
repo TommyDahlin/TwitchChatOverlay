@@ -5,9 +5,9 @@ A lightweight, always-on-top chat overlay for Twitch streamers to display live c
 ## Features
 
 ✨ **Always-on-Top Overlay** - Stays above fullscreen games without stealing focus
-- 🎮 Fullscreen game compatible (doesn't interrupt gameplay)
+- 🎮 Borderless Fullscreen game compatible (doesn't interrupt gameplay)
 - 💬 Real-time message updates (even when unfocused)
-- 🏷️ Mod/Sub/VIP badges with custom colors
+- 🏷️ Mod/Sub badges with Twitch colors
 - 👤 Username colors from Twitch IRC
 - ⌨️ Adjustable font sizes (Press `+` and `-` to adjust)
 - ⚙️ Config window for easy channel switching
@@ -15,22 +15,18 @@ A lightweight, always-on-top chat overlay for Twitch streamers to display live c
 
 ## Installation
 
-### Option 1: Windows Installer (Recommended)
-1. Download `TwitchChatOverlay_Setup_1.0.0.exe`
+Windows Installer
+1. Download `TwitchChatOverlay_Setup_1.0.2.exe`
 2. Run the installer
 3. Click through the setup wizard
+(Saves in C:\Users\%User%\AppData\Local\Programs\TwitchChatOverlay
 4. Launch from Start Menu or Desktop shortcut
 
-### Option 2: Portable Version
-1. Download `ChatReal.zip`
-2. Extract to any folder
-3. Run `ChatReal.exe`
-4. No installation required, no registry changes
 
 ## Quick Start
 
 1. **Launch the application**
-   - The **Config Window** appears on startup (white background)
+   - The **Config Window** appears on startup
    - The **Chat Overlay** is hidden until you connect to a channel
 
 2. **Connect to Twitch**
@@ -56,6 +52,7 @@ A lightweight, always-on-top chat overlay for Twitch streamers to display live c
 | `+` | Increase message font size (+2px) |
 | `-` | Decrease message font size (-2px) |
 | `F1` | Toggle chat overlay visibility |
+| `F2` | Toggle chat overlay drag function |
 | `Backspace` | Delete character in config window |
 
 ## Settings
@@ -63,22 +60,24 @@ A lightweight, always-on-top chat overlay for Twitch streamers to display live c
 Settings are saved to `settings.ini` in the same folder as the executable:
 
 ```ini
-[window]
-config_x=100
-config_y=100
-config_width=400
-config_height=300
-
-[chat]
-chat_x=100
-chat_y=400
-chat_width=500
-chat_height=300
-message_font_size=14
+[Default Channel]
+default_channel=brawlpro
+[Config Window settings]
+config_width=479
+config_height=850
+config_x=356
+config_y=423
+[Chat Window settings]
+chat_width=467
+chat_height=523
+chat_x=357
+chat_y=736
 username_font_size=16
+message_font_size=31
+channel_valid=true
+[Max amount of messages]
+max_messages=24
 
-[chat_connection]
-default_channel=crybee98
 ```
 
 You can edit this file directly to customize:
@@ -91,9 +90,8 @@ Changes to font sizes via keyboard (`+`/`-` keys) save automatically.
 ## Features in Detail
 
 ### Badges
-- **MOD** (gold) - Channel moderator
-- **SUB** (gold) - Channel subscriber
-- **VIP** (gold) - Channel VIP
+- **MOD** - Channel moderator
+- **SUB** - Channel subscriber
 - Badges appear before usernames in the chat overlay
 
 ### Colors
@@ -102,7 +100,7 @@ Changes to font sizes via keyboard (`+`/`-` keys) save automatically.
 - Overlay window is transparent with black text for readability
 
 ### Always-On-Top Behavior
-- Overlay stays above fullscreen games
+- Overlay stays above borderless fullscreen games
 - Does NOT steal focus when messages arrive
 - Continues rendering even when unfocused
 - Perfect for streaming or gaming
