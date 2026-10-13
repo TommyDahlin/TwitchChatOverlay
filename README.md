@@ -16,10 +16,10 @@ A lightweight, always-on-top chat overlay for Twitch streamers to display live c
 ## Installation
 
 Windows Installer
-1. Download `TwitchChatOverlay_Setup_1.0.2.exe`
+1. Download `ChatReal_Setup_1.0.2.exe`
 2. Run the installer
 3. Click through the setup wizard
-(Saves in C:\Users\%User%\AppData\Local\Programs\TwitchChatOverlay
+(Saves in C:\Users\%User%\AppData\Local\Programs\ChatReal
 4. Launch from Start Menu or Desktop shortcut
 
 
@@ -145,7 +145,7 @@ Executable: `ChatReal\src\target\release\src.exe`
 1. Install NSIS
 2. Open `ChatReal\installer.nsi` in NSIS Editor
 3. Click "Compile NSI Scripts"
-4. Output: `TwitchChatOverlay_Setup_1.0.0.exe`
+4. Output: `ChatReal_Setup_1.0.0.exe`
 
 ## Technical Details
 
@@ -162,7 +162,7 @@ Executable: `ChatReal\src\target\release\src.exe`
 
 ## Support
 
-For bugs, features, or questions, please [open an issue](https://github.com/yourusername/TwitchChatOverlay/issues) or contact the developer.
+For bugs, features, or questions, please [open an issue](https://github.com/yourusername/ChatReal/issues) or contact the developer.
 
 ---
 
