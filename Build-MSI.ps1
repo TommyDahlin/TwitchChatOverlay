@@ -6,7 +6,7 @@
     - Reads the package name, version and upgrade GUID from <ProjectRoot>\Cargo.toml
     - Runs "cargo build --release" in the project folder
     - Generates the WiX source itself (no wix\main.wxs needed)
-    - Installs per-user to %LOCALAPPDATA%\Programs\TwitchChatOverlay (no admin needed,
+    - Installs per-user to %LOCALAPPDATA%\Programs\ChatReal (no admin needed,
       and the app can write settings.ini next to the exe)
     - Bundles every PNG from <ProjectRoot>\img (MOD.png, SUB.png) into an img folder
     - Adds a Start Menu shortcut
@@ -127,7 +127,7 @@ Write-Host "[OK] $exePath"
 # ---------------------------------------------------------------------------
 Write-Step 'Generating WiX source'
 # ---------------------------------------------------------------------------
-$work = Join-Path $env:TEMP 'TwitchChatOverlay-msi-build'
+$work = Join-Path $env:TEMP 'ChatReal-msi-build'
 if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
 New-Item -ItemType Directory -Path $work | Out-Null
 
@@ -146,7 +146,7 @@ $wxs = @"
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <Product Id="*"
-           Name="Twitch Chat Overlay"
+           Name="ChatReal"
            Language="1033"
            Version="$version"
            Manufacturer="$(Esc $manufacturer)"
@@ -162,7 +162,7 @@ $wxs = @"
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="LocalAppDataFolder">
         <Directory Id="ProgramsDir" Name="Programs">
-          <Directory Id="INSTALLFOLDER" Name="TwitchChatOverlay">
+          <Directory Id="INSTALLFOLDER" Name="ChatReal">
             <Directory Id="ImgDir" Name="img" />
           </Directory>
         </Directory>
@@ -190,7 +190,7 @@ $($imgComponents.ToString())    </DirectoryRef>
                   Target="[#MainExeFile]"
                   WorkingDirectory="INSTALLFOLDER" />
         <RemoveFolder Id="RemoveStartMenuDir" On="uninstall" />
-        <RegistryValue Root="HKCU" Key="Software\TwitchChatOverlay" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+        <RegistryValue Root="HKCU" Key="Software\ChatReal" Name="installed" Type="integer" Value="1" KeyPath="yes" />
       </Component>
     </DirectoryRef>
 
@@ -227,4 +227,4 @@ Write-Step 'Done'
 # ---------------------------------------------------------------------------
 $size = [math]::Round((Get-Item -LiteralPath $msiPath).Length / 1MB, 2)
 Write-Host "[OK] MSI created: $msiPath ($size MB)" -ForegroundColor Green
-Write-Host "     Installs to: %LOCALAPPDATA%\Programs\TwitchChatOverlay"
+Write-Host "     Installs to: %LOCALAPPDATA%\Programs\ChatReal"

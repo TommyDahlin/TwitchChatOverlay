@@ -33,7 +33,7 @@ If you've already built the release binary:
 
 The final MSI installer will be created at:
 ```
-src\target\wix\TwitchChatOverlay-1.0.0-x86_64.msi
+src\target\wix\ChatReal-1.0.3-x86_64.msi
 ```
 
 ## Build Process
@@ -54,7 +54,7 @@ The scripts automate the following steps:
 
 4. **Link MSI** (light.exe)
    - Links the object file with WiX UI extensions
-   - Produces the final `TwitchChatOverlay-1.0.0-x86_64.msi`
+   - Produces the final `ChatReal-1.0.3-x86_64.msi`
 
 5. **Display Summary**
    - Shows file size, location, and completion status
@@ -92,5 +92,5 @@ Once the MSI is built, you can:
 
 Users can install by:
 - Double-clicking the MSI
-- Running `msiexec /i TwitchChatOverlay-1.0.0-x86_64.msi`
+- Running `msiexec /i ChatReal-1.0.3-x86_64.msi`
 - Via Group Policy (for enterprise deployments)

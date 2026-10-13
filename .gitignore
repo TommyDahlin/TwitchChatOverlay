@@ -15,6 +15,7 @@ Cargo.lock
 
 # Build outputs
 *.exe
+*.msi
 *.nsi
 *.log
 

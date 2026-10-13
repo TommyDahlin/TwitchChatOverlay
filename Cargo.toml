@@ -1,6 +1,6 @@
 [package]
-name = "TwitchChatOverlay"
-version = "1.0.2"
+name = "ChatReal"
+version = "1.0.3"
 edition = "2021"
 authors = ["Tommy Dahlin"]
 description = "A Twitch chat overlay for streaming with always-on-top functionality and badge support"

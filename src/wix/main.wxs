@@ -60,7 +60,7 @@
 
     <Product
         Id='*'
-        Name='TwitchChatOverlay'
+        Name='ChatReal'
         UpgradeCode='B08E2A07-FF9E-4A42-B559-1FE6E1F03E44'
         Manufacturer='Streamer'
         Language='1033'
@@ -83,11 +83,11 @@
             DowngradeErrorMessage='A newer version of [ProductName] is already installed. Setup will now exit.'/>
 
         <Media Id='1' Cabinet='media1.cab' EmbedCab='yes' DiskPrompt='CD-ROM #1'/>
-        <Property Id='DiskPrompt' Value='TwitchChatOverlay Installation'/>
+        <Property Id='DiskPrompt' Value='ChatReal Installation'/>
 
         <Directory Id='TARGETDIR' Name='SourceDir'>
             <Directory Id='$(var.PlatformProgramFilesFolder)' Name='PFiles'>
-                <Directory Id='APPLICATIONFOLDER' Name='TwitchChatOverlay'>
+                <Directory Id='APPLICATIONFOLDER' Name='ChatReal'>
                     <!--
                       Disabling the license sidecar file in the installer is a two step process:
 
@@ -116,9 +116,9 @@
                         <Component Id='binary0' Guid='*'>
                             <File
                                 Id='exe0'
-                                Name='TwitchChatOverlay.exe'
+                                Name='ChatReal.exe'
                                 DiskId='1'
-                                Source='$(var.CargoTargetBinDir)\TwitchChatOverlay.exe'
+                                Source='$(var.CargoTargetBinDir)\ChatReal.exe'
                                 KeyPath='yes'/>
                         </Component>
                     </Directory>
